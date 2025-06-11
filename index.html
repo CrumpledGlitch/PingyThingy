@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PingyThingy</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .notification-enter { opacity: 0; transform: translateY(-20px); }
+        .notification-enter-active { opacity: 1; transform: translateY(0); transition: opacity 300ms, transform 300ms; }
+        select { background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%239ca3af' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e"); background-position: right 0.5rem center; background-repeat: no-repeat; background-size: 1.5em 1.5em; padding-right: 2.5rem; -webkit-appearance: none; -moz-appearance: none; appearance: none; }
+    </style>
+</head>
+<body class="bg-gray-900">
+    <div id="app-container" class="text-white min-h-screen font-sans p-4 sm:p-6 lg:p-8 relative"></div>
+    <div id="notification-container" class="fixed top-5 right-5 z-50 space-y-3"></div>
+    <script>
+        const API_BASE_URL = 'http://127.0.0.1:5000';
+        let state = { devices: [], tags: [], rooms: [], deviceStatuses: {}, notifications: [], isLoading: true, error: null, activeModal: null, editingDevice: null, activeStatusFilter: 'all', activeTagFilter: 'all', activeRoomFilter: 'all', searchTerm: '', activeSettingsTab: 'tags' };
+        let refreshIntervalId = null;
+
+        function render() {
+            const app = document.getElementById('app-container');
+            if (state.isLoading && !state.error) { app.innerHTML = generateLoadingHTML(); return; }
+            const filtered = getFilteredDevices();
+            app.innerHTML = `<div class="max-w-7xl mx-auto">${state.error ? generateErrorBannerHTML(state.error) : ''}${generateHeaderHTML()}${generateSystemStatusHTML()}${generateFilterNavHTML()}${generateDeviceGridHTML(filtered)}</div>${generateModalHTML()}`;
+            document.getElementById('notification-container').innerHTML = generateNotificationsHTML();
+            attachEventListeners();
+        }
+
+        function generateLoadingHTML() { return `<div class="flex items-center justify-center h-screen"><div class="flex flex-col items-center"><div class="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-400"></div><p class="mt-4 text-lg">Connecting...</p></div></div>`; }
+        function generateErrorBannerHTML(msg) { return `<div class="bg-red-800 border-red-600 text-white px-4 py-3 rounded-lg mb-6"><strong class="font-bold">Error: </strong><span>${escapeHTML(msg)}</span></div>`; }
+        function generateHeaderHTML() { return `<header class="flex flex-col sm:flex-row justify-between items-center mb-4 gap-4"><h1 class="text-3xl sm:text-4xl font-bold text-gray-100">PingyThingy</h1><div class="w-full sm:w-auto flex items-center gap-2"><input type="search" id="search-bar" placeholder="Search devices..." value="${escapeHTML(state.searchTerm)}" class="w-full sm:w-64 bg-gray-700 rounded-md px-3 py-2"><button id="add-device-btn" class="flex-shrink-0 p-3 bg-blue-600 hover:bg-blue-700 rounded-full"><svg class="pointer-events-none" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button><button id="settings-btn" class="flex-shrink-0 p-3 bg-gray-700 hover:bg-gray-600 rounded-full"><svg class="pointer-events-none" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 0 2l-.15.08a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l-.22-.38a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1 0-2l.15-.08a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button></div></header>`;}
+        function generateSystemStatusHTML() {
+            const { devices, deviceStatuses } = state;
+            if (!devices.length) return '<div class="mb-6"></div>';
+            const online = devices.filter(d => deviceStatuses[d.id]?.status === 'online').length;
+            const percentage = Math.round((online / devices.length) * 100);
+            const barColor = percentage < 50 ? 'bg-red-500' : percentage < 90 ? 'bg-yellow-500' : 'bg-green-500';
+            return `<div class="mb-6"><div class="flex justify-between text-sm text-gray-300 mb-1"><span>System Status</span><span>${online}/${devices.length} Online (${percentage}%)</span></div><div class="w-full bg-gray-700 rounded-full h-2.5"><div class="${barColor} h-2.5 rounded-full" style="width:${percentage}%"></div></div></div>`;
+        }
+        function generateFilterNavHTML() {
+            const { tags, rooms, activeStatusFilter, activeTagFilter, activeRoomFilter } = state;
+            const statusOptions = ['all', 'online', 'offline'].map(s => `<option value="${s}" ${s === activeStatusFilter ? 'selected' : ''}>${s.charAt(0).toUpperCase() + s.slice(1)}</option>`).join('');
+            const tagOptions = tags.map(t => `<option value="${t.id}" ${t.id === activeTagFilter ? 'selected' : ''}>${escapeHTML(t.name)}</option>`).join('');
+            const roomOptions = rooms.map(r => `<option value="${r.id}" ${r.id === activeRoomFilter ? 'selected' : ''}>${escapeHTML(r.name)}</option>`).join('');
+            return `<nav class="mb-6 grid grid-cols-1 sm:grid-cols-3 gap-4"><select id="status-filter" class="bg-gray-700 rounded-md px-3 py-2">${statusOptions}</select><select id="tag-filter" class="bg-gray-700 rounded-md px-3 py-2"><option value="all">All Tags</option>${tagOptions}</select><select id="room-filter" class="bg-gray-700 rounded-md px-3 py-2"><option value="all">All Rooms</option>${roomOptions}</select></nav>`;
+        }
+        function generateDeviceGridHTML(devices) {
+            if (!devices.length) return `<div class="text-center py-16 px-6 bg-gray-800 rounded-lg"><p class="text-gray-400">No devices match criteria.</p></div>`;
+            return `<div id="device-grid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">${devices.map(d => generateDeviceCardHTML(d)).join('')}</div>`;
+        }
+        function generateDeviceCardHTML(device) {
+            const statusInfo = state.deviceStatuses[device.id] || { status: 'checking', timestamp: new Date().toISOString() };
+            const tagName = state.tags.find(t => t.id === device.tagId)?.name || 'Untagged';
+            const roomName = state.rooms.find(r => r.id === device.roomId)?.name || 'No Room';
+            let durationText = 'Checking...';
+            if (statusInfo.status === 'online') durationText = `Online for: ${formatRelativeTime(statusInfo.timestamp)}`;
+            else if (statusInfo.status === 'offline') durationText = `Offline for: ${formatRelativeTime(statusInfo.timestamp)}`;
+            const isLecternPC = tagName.toLowerCase().includes('lectern pc');
+            const connectButtonHTML = generateConnectButtonHTML(device, isLecternPC);
+            return `<div class="bg-gray-800 rounded-lg p-4 flex flex-col justify-between shadow-lg hover:shadow-blue-500/20 hover:scale-[1.02] transition-all"><div><div class="flex justify-between items-start">${generateDeviceIconHTML(tagName)}${generateStatusIndicatorHTML(statusInfo)}</div><h3 class="font-bold text-lg mt-3 truncate">${escapeHTML(device.friendlyName)}</h3><p class="text-sm text-gray-400 truncate">${escapeHTML(device.address)}</p><p class="text-xs text-gray-500 mt-1">${durationText}</p></div><div class="flex justify-between items-center mt-4"><div class="flex flex-wrap gap-1 text-xs"><span class="bg-gray-700 px-2 py-1 rounded-full">${escapeHTML(tagName)}</span><span class="bg-gray-600 px-2 py-1 rounded-full">${escapeHTML(roomName)}</span></div><div class="flex items-center gap-1">${connectButtonHTML}<button data-edit-device-id="${device.id}" class="edit-device-btn text-gray-500 hover:text-yellow-400 p-1 rounded-full" title="Edit"><svg class="pointer-events-none" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg></button><button data-delete-device-id="${device.id}" class="delete-device-btn text-gray-500 hover:text-red-500 p-1 rounded-full" title="Delete"><svg class="pointer-events-none" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg></button></div></div></div>`;
+        }
+        function generateConnectButtonHTML(device, isRDP) {
+            if (isRDP) {
+                const rdpContent = `full address:s:${device.address}`;
+                const rdpFileName = `${device.friendlyName.replace(/ /g, '_')}.rdp`;
+                const rdpDataUri = `data:text/plain;charset=utf-8,${encodeURIComponent(rdpContent)}`;
+                return `<a href="${rdpDataUri}" download="${rdpFileName}" class="text-gray-500 hover:text-blue-400 p-1 rounded-full" title="Download RDP file"><svg class="pointer-events-none" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></a>`;
+            } else {
+                return `<a href="http://${escapeHTML(device.address)}" target="_blank" rel="noopener noreferrer" class="text-gray-500 hover:text-blue-400 p-1 rounded-full" title="Open in new tab"><svg class="pointer-events-none" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/></svg></a>`;
+            }
+        }
+        function generateModalHTML() {
+            const { activeModal, editingDevice, tags, rooms } = state;
+            if (activeModal === 'add' || activeModal === 'edit') return generateDeviceModalHTML(tags, rooms, editingDevice);
+            if (activeModal === 'settings') return generateSettingsModalHTML();
+            return '';
+        }
+        function generateDeviceModalHTML(tags, rooms, device = null) {
+            const isEditing = !!device;
+            const tagOpts = tags.map(t => `<option value="${t.id}" ${isEditing && device.tagId === t.id ? 'selected' : ''}>${escapeHTML(t.name)}</option>`).join('');
+            const roomOpts = rooms.map(r => `<option value="${r.id}" ${isEditing && device.roomId === r.id ? 'selected' : ''}>${escapeHTML(r.name)}</option>`).join('');
+            return `<div id="device-modal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4"><div class="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md"><h2 class="text-xl font-bold mb-4">${isEditing ? 'Edit' : 'Add'} Device</h2><form id="device-form" data-device-id="${isEditing ? device.id : ''}"><div class="space-y-4"><div><label for="address">IP/Hostname</label><input id="address" type="text" required value="${isEditing ? escapeHTML(device.address) : ''}" class="w-full bg-gray-700 rounded px-3 py-2 mt-1"></div><div><label for="friendlyName">Friendly Name</label><input id="friendlyName" type="text" required value="${isEditing ? escapeHTML(device.friendlyName) : ''}" class="w-full bg-gray-700 rounded px-3 py-2 mt-1"></div><div class="grid grid-cols-2 gap-4"><div><label for="tagId">Tag</label><select id="tagId" class="w-full bg-gray-700 rounded px-3 py-2 mt-1"><option value="">No Tag</option>${tagOpts}</select></div><div><label for="roomId">Room</label><select id="roomId" class="w-full bg-gray-700 rounded px-3 py-2 mt-1"><option value="">No Room</option>${roomOpts}</select></div></div><div><label for="notes">Notes</label><textarea id="notes" class="w-full bg-gray-700 rounded px-3 py-2 h-24 mt-1">${isEditing ? escapeHTML(device.notes) : ''}</textarea></div></div><div class="mt-6 flex justify-end gap-3"><button type="button" class="modal-close-btn px-4 py-2 bg-gray-600 rounded">Cancel</button><button type="submit" class="px-4 py-2 bg-blue-600 rounded">Save</button></div></form></div></div>`;
+        }
+        function generateSettingsModalHTML() {
+            const { activeSettingsTab, tags, rooms } = state;
+            const activeTabClass = 'bg-gray-700 text-white';
+            const inactiveTabClass = 'text-gray-400 hover:bg-gray-800 hover:text-white';
+            
+            let mainContentHTML = '';
+            if (activeSettingsTab === 'tags') {
+                mainContentHTML = generateManagerSectionHTML('Tags', tags, 'tags');
+            } else if (activeSettingsTab === 'rooms') {
+                mainContentHTML = generateManagerSectionHTML('Rooms', rooms, 'rooms');
+            }
+
+            return `<div id="settings-modal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4">
+                        <div class="bg-gray-800 rounded-lg shadow-xl w-full max-w-2xl flex min-h-[400px]">
+                            <!-- Sidebar -->
+                            <div class="w-1/4 bg-gray-900/50 p-4 rounded-l-lg border-r border-gray-700">
+                                <h2 class="text-xl font-bold mb-4">Settings</h2>
+                                <nav class="flex flex-col gap-1">
+                                    <button data-tab="tags" class="settings-tab-btn w-full text-left px-3 py-2 rounded-md transition-colors ${activeSettingsTab === 'tags' ? activeTabClass : inactiveTabClass}">Tags</button>
+                                    <button data-tab="rooms" class="settings-tab-btn w-full text-left px-3 py-2 rounded-md transition-colors ${activeSettingsTab === 'rooms' ? activeTabClass : inactiveTabClass}">Rooms</button>
+                                </nav>
+                            </div>
+                            <!-- Main Content -->
+                            <div class="w-3/4 p-6 flex flex-col">
+                                <div class="flex-grow">
+                                    ${mainContentHTML}
+                                </div>
+                                <div class="mt-6 flex justify-end border-t border-gray-700 pt-4">
+                                    <button type="button" class="modal-close-btn px-4 py-2 bg-gray-600 rounded hover:bg-gray-500">Close</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>`;
+        }
+        function generateManagerSectionHTML(title, items, type) {
+            const list = items.length > 0 ? items.map(i => `<div class="flex justify-between items-center bg-gray-700 p-2 rounded"><span>${escapeHTML(i.name)}</span><button data-delete-id="${i.id}" data-delete-type="${type}" class="delete-item-btn text-gray-400 hover:text-red-500"><svg class="pointer-events-none" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div>`).join('') : `<p class="text-gray-500 text-center py-4 text-sm">No ${type} created.</p>`;
+            return `<div><h3 class="font-bold text-lg mb-4">${title}</h3><form data-type="${type}" class="add-item-form flex gap-2 mb-4"><input type="text" required placeholder="New ${title.slice(0, -1)} name" class="flex-grow bg-gray-700 rounded px-3 py-2"><button type="submit" class="px-4 py-2 bg-blue-600 rounded shrink-0">Add</button></form><div class="space-y-2 max-h-48 overflow-y-auto pr-2">${list}</div></div>`;
+        }
+        function generateNotificationsHTML() {
+            return state.notifications.map(n => `<div data-notification-id="${n.id}" class="notification-enter bg-red-600 text-white p-4 rounded-lg shadow-lg flex items-start gap-4 max-w-sm"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-6 h-6 shrink-0"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span>${escapeHTML(n.message)}</span><button class="ml-auto -mr-1 -mt-1 p-1 close-notification-btn"><svg class="pointer-events-none" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg></button></div>`).join('');
+        }
+        function generateStatusIndicatorHTML(info) {
+             switch (info.status) {
+                case 'online': return `<div class="flex items-center gap-2 text-green-400"><div class="w-3 h-3 bg-green-400 rounded-full animate-pulse"></div>Online</div>`;
+                case 'offline': return `<div class="flex items-center gap-2 text-red-400"><div class="w-3 h-3 bg-red-400 rounded-full"></div>Offline</div>`;
+                default: return `<div class="flex items-center gap-2 text-yellow-400"><div class="w-3 h-3 bg-yellow-400 rounded-full animate-spin"></div>Checking</div>`;
+             }
+        }
+        function generateDeviceIconHTML(tagName) {
+            const lower = tagName.toLowerCase();
+            if (lower.includes('pc') || lower.includes('windows')) return `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="lucide lucide-monitor text-gray-500"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`;
+            if (lower.includes('server') || lower.includes('linux')) return `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="lucide lucide-server text-gray-500"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>`;
+            if (lower.includes('camera')) return `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="lucide lucide-camera text-gray-500"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>`;
+            if (lower.includes('switch') || lower.includes('router')) return `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="lucide lucide-wifi text-gray-500"><path d="M5 12.55a8 8 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a4 4 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>`;
+            return `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="lucide lucide-hard-drive text-gray-500"><line x1="22" y1="12" x2="2" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" y1="16" x2="6.01" y2="16"/><line x1="10" y1="16" x2="10.01" y2="16"/></svg>`;
+        }
+        
+        async function apiRequest(endpoint, method, body) {
+            try {
+                const opts = { method, headers: { 'Content-Type': 'application/json' } };
+                if (body) opts.body = JSON.stringify(body);
+                const res = await fetch(`${API_BASE_URL}${endpoint}`, opts);
+                if (!res.ok) throw new Error((await res.json()).error || 'API error');
+                await fetchData();
+            } catch (err) {
+                console.error(`API Error:`, err);
+                setState({ error: err.message });
+            }
+        }
+        
+        async function fetchData() {
+            const oldStatuses = { ...state.deviceStatuses };
+            try {
+                const [devs, tags, rooms, statuses] = await Promise.all([
+                    fetch(`${API_BASE_URL}/devices`).then(r => r.json()),
+                    fetch(`${API_BASE_URL}/tags`).then(r => r.json()),
+                    fetch(`${API_BASE_URL}/rooms`).then(r => r.json()),
+                    fetch(`${API_BASE_URL}/status`).then(r => r.json())
+                ]);
+                
+                if (devs) {
+                   devs.forEach(device => {
+                        if (oldStatuses[device.id]?.status === 'online' && statuses[device.id]?.status === 'offline') {
+                            addNotification(`Device offline: ${device.friendlyName}`);
+                        }
+                    });
+                }
+
+                setState({
+                    devices: Array.isArray(devs) ? devs : [],
+                    tags: Array.isArray(tags) ? tags : [],
+                    rooms: Array.isArray(rooms) ? rooms : [],
+                    deviceStatuses: statuses,
+                    error: null,
+                });
+            } catch (err) {
+                console.error("Fetch error:", err);
+                setState({ error: err.message });
+            } finally {
+                setState({ isLoading: false });
+            }
+        }
+        
+        function attachEventListeners() {
+            document.getElementById('add-device-btn')?.addEventListener('click', () => openModal('add'));
+            document.getElementById('settings-btn')?.addEventListener('click', () => openModal('settings'));
+            document.getElementById('search-bar')?.addEventListener('input', e => setState({ searchTerm: e.target.value }));
+            document.getElementById('status-filter')?.addEventListener('change', e => setState({ activeStatusFilter: e.target.value }));
+            document.getElementById('tag-filter')?.addEventListener('change', e => setState({ activeTagFilter: e.target.value }));
+            document.getElementById('room-filter')?.addEventListener('change', e => setState({ activeRoomFilter: e.target.value }));
+            document.getElementById('device-grid')?.addEventListener('click', handleDeviceGridClick);
+            document.querySelector('.modal-close-btn')?.closest('div.fixed')?.addEventListener('click', handleModalClose);
+            document.getElementById('device-form')?.addEventListener('submit', handleDeviceFormSubmit);
+            document.querySelector('.add-item-form[data-type="tags"]')?.addEventListener('submit', handleAddItemForm);
+            document.querySelector('.add-item-form[data-type="rooms"]')?.addEventListener('submit', handleAddItemForm);
+            document.getElementById('settings-modal')?.addEventListener('click', handleDeleteItemClick);
+            document.getElementById('settings-modal')?.addEventListener('click', handleSettingsTabClick);
+            document.getElementById('notification-container')?.addEventListener('click', handleNotificationClick);
+        }
+        function handleDeviceGridClick(e) {
+            const editBtn = e.target.closest('.edit-device-btn');
+            const deleteBtn = e.target.closest('.delete-device-btn');
+            if (editBtn) openModal('edit', state.devices.find(d => d.id === editBtn.dataset.editDeviceId));
+            else if (deleteBtn && confirm('Delete?')) apiRequest(`/devices/${deleteBtn.dataset.deleteDeviceId}`, 'DELETE');
+        }
+        function openModal(modalType, data = null) {
+            clearInterval(refreshIntervalId);
+            const settingsTab = modalType === 'settings' ? { activeSettingsTab: 'tags' } : {};
+            setState({ activeModal: modalType, editingDevice: data, ...settingsTab });
+        }
+        function closeModal() {
+            setState({ activeModal: null, editingDevice: null });
+            startRefreshTimer();
+        }
+        function handleModalClose(e) { if (e.target.matches('#device-modal, #settings-modal') || e.target.closest('.modal-close-btn')) closeModal(); }
+        async function handleDeviceFormSubmit(e) {
+            e.preventDefault();
+            const id = e.target.dataset.deviceId;
+            const data = { address: e.target.address.value, friendlyName: e.target.friendlyName.value, tagId: e.target.tagId.value, roomId: e.target.roomId.value, notes: e.target.notes.value };
+            await apiRequest(id ? `/devices/${id}` : '/devices', id ? 'PUT' : 'POST', data);
+            closeModal();
+        }
+        async function handleAddItemForm(e) {
+            e.preventDefault();
+            const type = e.target.dataset.type;
+            const input = e.target.querySelector('input');
+            if (input.value.trim()) {
+                await apiRequest(`/${type}`, 'POST', { name: input.value });
+                input.value = ''; input.focus();
+            }
+        }
+        function handleDeleteItemClick(e) {
+            const btn = e.target.closest('.delete-item-btn');
+            if (btn && confirm('Delete?')) apiRequest(`/${btn.dataset.deleteType}/${btn.dataset.deleteId}`, 'DELETE');
+        }
+        function handleSettingsTabClick(e) {
+            const tabBtn = e.target.closest('.settings-tab-btn');
+            if (tabBtn) setState({ activeSettingsTab: tabBtn.dataset.tab });
+        }
+        function handleNotificationClick(e) {
+            const btn = e.target.closest('.close-notification-btn');
+            if (btn) removeNotification(btn.closest('[data-notification-id]').dataset.notificationId);
+        }
+        function addNotification(message) {
+            const id = Date.now();
+            state.notifications.push({ id, message });
+            render();
+            setTimeout(() => document.querySelector(`[data-notification-id="${id}"]`)?.classList.add('notification-enter-active'), 10);
+            setTimeout(() => removeNotification(id), 7000);
+        }
+        function removeNotification(id) {
+            state.notifications = state.notifications.filter(n => n.id != id);
+            render();
+        }
+
+        function setState(newState) { Object.assign(state, newState); render(); }
+        function startRefreshTimer() { clearInterval(refreshIntervalId); refreshIntervalId = setInterval(fetchData, 5000); }
+        function getFilteredDevices() {
+            const { devices, searchTerm, activeStatusFilter, activeTagFilter, activeRoomFilter, deviceStatuses } = state;
+            let filtered = devices
+                .filter(d => !searchTerm || d.friendlyName.toLowerCase().includes(searchTerm.toLowerCase()) || d.address.toLowerCase().includes(searchTerm.toLowerCase()) || (d.notes && d.notes.toLowerCase().includes(searchTerm.toLowerCase())))
+                .filter(d => activeStatusFilter === 'all' || deviceStatuses[d.id]?.status === activeStatusFilter)
+                .filter(d => activeTagFilter === 'all' || d.tagId === activeTagFilter)
+                .filter(d => activeRoomFilter === 'all' || d.roomId === activeRoomFilter);
+
+            const priority = { 'offline': 0, 'checking': 1, 'online': 2 };
+            filtered.sort((a, b) => (priority[deviceStatuses[a.id]?.status || 'checking'] - priority[deviceStatuses[b.id]?.status || 'checking']) || a.friendlyName.localeCompare(b.friendlyName));
+            return filtered;
+        }
+        function formatRelativeTime(iso) {
+            if (!iso) return '...';
+            const seconds = Math.round((new Date() - new Date(iso)) / 1000);
+            if (seconds < 60) return `${seconds}s`;
+            const minutes = Math.round(seconds / 60);
+            if (minutes < 60) return `${minutes}m`;
+            const hours = Math.round(minutes / 60);
+            if (hours < 24) return `${hours}h`;
+            return `${Math.round(hours / 24)}d`;
+        }
+        function escapeHTML(str) {
+            const p = document.createElement('p');
+            p.textContent = str || '';
+            return p.innerHTML;
+        }
+        document.addEventListener('DOMContentLoaded', () => {
+            render();
+            fetchData();
+            startRefreshTimer();
+        });
+    </script>
+</body>
+</html>
